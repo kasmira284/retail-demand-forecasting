@@ -1,8 +1,11 @@
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
-from statsmodels.tsa.statespace.sarimax import SARIMAX
 import numpy as np
+
+from statsmodels.tsa.statespace.sarimax import SARIMAX
+from statsmodels.tsa.stattools import adfuller
+
 
 st.set_page_config(page_title="Retail Demand Forecasting", layout="wide")
 st.title("Retail Demand Forecasting System")

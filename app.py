@@ -8,21 +8,26 @@ from statsmodels.tsa.stattools import adfuller
 from statsmodels.graphics.tsaplots import plot_acf
 
 
+# --------------------------------------------------
+# Page config
+# --------------------------------------------------
 st.set_page_config(page_title="Retail Demand Forecasting", layout="wide")
 st.title("Retail Demand Forecasting System")
 
-# -----------------------------------
+
+# --------------------------------------------------
 # Helper: Trim trailing zero-demand weeks
-# -----------------------------------
+# --------------------------------------------------
 def trim_trailing_zeros(df, target_col="items_shipped"):
     df = df.copy()
     while len(df) > 0 and df[target_col].iloc[-1] == 0:
         df = df.iloc[:-1]
     return df
 
-# -----------------------------------
+
+# --------------------------------------------------
 # Load default dataset
-# -----------------------------------
+# --------------------------------------------------
 def load_default_data():
     df = pd.read_csv("weekly_demand.csv")
     df["date"] = pd.to_datetime(df["date"], format="%m/%d/%Y")
@@ -32,9 +37,10 @@ def load_default_data():
     df = trim_trailing_zeros(df)
     return df
 
-# -----------------------------------
+
+# --------------------------------------------------
 # File uploader
-# -----------------------------------
+# --------------------------------------------------
 uploaded_file = st.file_uploader(
     "Upload your weekly demand CSV file",
     type=["csv"]
@@ -47,35 +53,40 @@ else:
     st.info("Using default dataset")
     df = load_default_data()
 
-# -----------------------------------
+
+# --------------------------------------------------
 # Data validation & preparation
-# -----------------------------------
-required_cols = {"date", "items_shipped"}
+# --------------------------------------------------
+required_cols = {"date", "items_shipped", "total_freight", "total_revenue"}
 if not required_cols.issubset(df.columns):
-    st.error("Dataset must contain columns: date, items_shipped")
+    st.error(
+        "Dataset must contain columns: "
+        "date, items_shipped, total_freight, total_revenue"
+    )
     st.stop()
 
 df["date"] = pd.to_datetime(df["date"])
 df = df.sort_values("date")
 df.set_index("date", inplace=True)
 df = df.asfreq("W-SUN")
-
 df = trim_trailing_zeros(df)
 
 if len(df) < 20:
     st.error("Dataset too short after cleaning to build a forecast.")
     st.stop()
 
-# -----------------------------------
+
+# --------------------------------------------------
 # Dataset preview
-# -----------------------------------
+# --------------------------------------------------
 st.subheader("Dataset Preview")
 st.write(f"Date range: {df.index.min().date()} → {df.index.max().date()}")
 st.dataframe(df.head())
 
-# -----------------------------------
+
+# --------------------------------------------------
 # Historical plot
-# -----------------------------------
+# --------------------------------------------------
 st.subheader("Historical Weekly Demand")
 
 fig, ax = plt.subplots(figsize=(10, 4))
@@ -85,9 +96,34 @@ ax.set_ylabel("Items Shipped")
 ax.legend()
 st.pyplot(fig)
 
-# -----------------------------------
+
+# --------------------------------------------------
+# Stationarity Test (ADF)
+# --------------------------------------------------
+st.subheader("Stationarity Test (Augmented Dickey–Fuller)")
+
+adf_stat, p_value, _, _, crit_vals, _ = adfuller(df["items_shipped"].dropna())
+
+st.write("**ADF Statistic:**", round(adf_stat, 4))
+st.write("**p-value:**", round(p_value, 6))
+st.dataframe(
+    pd.DataFrame.from_dict(crit_vals, orient="index", columns=["Critical Value"])
+)
+
+if p_value < 0.05:
+    st.success(
+        "The series is stationary. No differencing required."
+    )
+else:
+    st.warning(
+        "The series is non-stationary. "
+        "First-order differencing (d = 1) is required."
+    )
+
+
+# --------------------------------------------------
 # Forecast settings
-# -----------------------------------
+# --------------------------------------------------
 st.subheader("Forecast Settings")
 
 horizon = st.slider(
@@ -97,14 +133,19 @@ horizon = st.slider(
     value=12
 )
 
-# -----------------------------------
-# SARIMA model
-# -----------------------------------
+
+# --------------------------------------------------
+# SARIMAX with exogenous variables
+# --------------------------------------------------
+exog_cols = ["total_freight", "total_revenue"]
+exog = df[exog_cols]
+
 use_seasonality = len(df) >= 104
 
 if use_seasonality:
     model = SARIMAX(
         df["items_shipped"],
+        exog=exog,
         order=(0, 1, 1),
         seasonal_order=(0, 0, 1, 52),
         enforce_stationarity=False,
@@ -113,6 +154,7 @@ if use_seasonality:
 else:
     model = SARIMAX(
         df["items_shipped"],
+        exog=exog,
         order=(0, 1, 1),
         enforce_stationarity=False,
         enforce_invertibility=False
@@ -120,215 +162,157 @@ else:
 
 results = model.fit(disp=False)
 
-# -----------------------------------
-# Forecast + Confidence Intervals
-# -----------------------------------
-forecast_res = results.get_forecast(steps=horizon)
 
-forecast_index = pd.date_range(
-    start=df.index[-1] + pd.Timedelta(weeks=1),
-    periods=horizon,
-    freq="W-SUN"
+# --------------------------------------------------
+# Future exogenous assumptions
+# --------------------------------------------------
+last_exog = exog.iloc[-1]
+
+future_exog = pd.DataFrame(
+    np.tile(last_exog.values, (horizon, 1)),
+    columns=exog_cols,
+    index=pd.date_range(
+        start=df.index[-1] + pd.Timedelta(weeks=1),
+        periods=horizon,
+        freq="W-SUN"
+    )
 )
 
-forecast_mean = forecast_res.predicted_mean
+
+# --------------------------------------------------
+# Forecast + confidence intervals
+# --------------------------------------------------
+forecast_res = results.get_forecast(
+    steps=horizon,
+    exog=future_exog
+)
+
+forecast_index = future_exog.index
 conf_int = forecast_res.conf_int()
 
 forecast_df = pd.DataFrame({
-    "forecast": forecast_mean.values,
+    "forecast": forecast_res.predicted_mean.values,
     "lower_ci": conf_int.iloc[:, 0].values,
     "upper_ci": conf_int.iloc[:, 1].values
 }, index=forecast_index)
 
-# No negative demand
-forecast_df[["forecast", "lower_ci", "upper_ci"]] = forecast_df[
-    ["forecast", "lower_ci", "upper_ci"]
-].clip(lower=0)
+forecast_df = forecast_df.clip(lower=0)
 
-# -----------------------------------
-# Plot forecast with confidence intervals
-# -----------------------------------
+
+# --------------------------------------------------
+# Plot forecast
+# --------------------------------------------------
 st.subheader("Forecast Results with Confidence Interval")
 
 fig2, ax2 = plt.subplots(figsize=(10, 4))
-
-ax2.plot(df.index, df["items_shipped"], label="Historical", color="blue")
-ax2.plot(forecast_df.index, forecast_df["forecast"], label="Forecast", color="orange")
+ax2.plot(df.index, df["items_shipped"], label="Historical")
+ax2.plot(forecast_df.index, forecast_df["forecast"], label="Forecast")
 
 ax2.fill_between(
     forecast_df.index,
     forecast_df["lower_ci"],
     forecast_df["upper_ci"],
-    color="orange",
     alpha=0.25,
     label="95% Confidence Interval"
 )
 
-ax2.set_xlabel("Date")
-ax2.set_ylabel("Items Shipped")
 ax2.legend()
 st.pyplot(fig2)
 
-# -----------------------------------
-# Download forecast
-# -----------------------------------
-download_df = forecast_df.reset_index()
-download_df.columns = ["date", "forecast", "lower_ci", "upper_ci"]
 
-st.download_button(
-    label="Download Forecast with Confidence Interval (CSV)",
-    data=download_df.to_csv(index=False),
-    file_name="forecast_with_ci.csv",
-    mime="text/csv"
-)
-
-# -----------------------------------
-# Explanation
-# -----------------------------------
-st.info(
-    "The shaded region represents the 95% confidence interval, indicating "
-    "the range within which future demand is expected to fall with high probability."
-)
-
-# -----------------------------------
-# Stationarity Test (ADF)
-# -----------------------------------
-st.subheader("Stationarity Test (Augmented Dickey–Fuller)")
-
-adf_result = adfuller(df["items_shipped"].dropna())
-
-adf_stat = adf_result[0]
-p_value = adf_result[1]
-crit_values = adf_result[4]
-
-st.write("**ADF Statistic:**", round(adf_stat, 4))
-st.write("**p-value:**", round(p_value, 6))
-
-st.write("**Critical Values:**")
-crit_df = pd.DataFrame.from_dict(
-    crit_values, orient="index", columns=["Critical Value"]
-)
-st.dataframe(crit_df)
-
-# Interpretation
-if p_value < 0.05:
-    st.success(
-        "The time series is **stationary** (p < 0.05). "
-        "No differencing is required."
-    )
-else:
-    st.warning(
-        "The time series is **non-stationary** (p ≥ 0.05). "
-        "First-order differencing is required, justifying d = 1 in SARIMA."
-    )
-
-# -----------------------------------
-# Model Diagnostics (Residual Analysis)
-# -----------------------------------
+# --------------------------------------------------
+# Model diagnostics
+# --------------------------------------------------
 st.subheader("Model Diagnostics")
 
 residuals = results.resid.dropna()
 
-# Residuals over time
-st.markdown("**Residuals over Time**")
-fig_resid, ax_resid = plt.subplots(figsize=(10, 3))
-ax_resid.plot(residuals)
-ax_resid.axhline(0, linestyle="--", color="red")
-ax_resid.set_xlabel("Date")
-ax_resid.set_ylabel("Residual")
-st.pyplot(fig_resid)
+fig_r, ax_r = plt.subplots(figsize=(10, 3))
+ax_r.plot(residuals)
+ax_r.axhline(0, linestyle="--", color="red")
+st.pyplot(fig_r)
 
-# Residual distribution
-st.markdown("**Residual Distribution**")
-fig_hist, ax_hist = plt.subplots(figsize=(6, 3))
-ax_hist.hist(residuals, bins=30)
-ax_hist.set_xlabel("Residual")
-ax_hist.set_ylabel("Frequency")
-st.pyplot(fig_hist)
-
-# Residual autocorrelation (ACF)
-st.markdown("**Residual Autocorrelation (ACF)**")
+fig_h, ax_h = plt.subplots(figsize=(6, 3))
+ax_h.hist(residuals, bins=30)
+st.pyplot(fig_h)
 
 fig_acf, ax_acf = plt.subplots(figsize=(6, 3))
 plot_acf(residuals, lags=20, ax=ax_acf)
 st.pyplot(fig_acf)
 
 
-# Diagnostic explanation
-st.info(
-    "If residuals fluctuate randomly around zero and show no strong autocorrelation, "
-    "the SARIMA model has successfully captured trend and seasonality."
-)
+# --------------------------------------------------
+# Model comparison: Naive vs SARIMAX
+# --------------------------------------------------
+st.subheader("Model Comparison (Naive vs SARIMAX)")
 
-# -----------------------------------
-# Model Comparison: Naive vs SARIMA
-# -----------------------------------
-st.subheader("Model Comparison (Baseline vs SARIMA)")
+split = int(len(df) * 0.8)
+train = df.iloc[:split]
+test = df.iloc[split:]
 
-# Hold-out split (last 20%)
-split_point = int(len(df) * 0.8)
-train = df["items_shipped"].iloc[:split_point]
-test = df["items_shipped"].iloc[split_point:]
-
-# ---- Naive forecast (last value carried forward)
-naive_forecast = test.shift(1).dropna()
-test_naive = test.loc[naive_forecast.index]
+naive_forecast = test["items_shipped"].shift(1).dropna()
+test_naive = test.loc[naive_forecast.index, "items_shipped"]
 
 naive_mae = np.mean(np.abs(test_naive - naive_forecast))
 naive_rmse = np.sqrt(np.mean((test_naive - naive_forecast) ** 2))
 
-# ---- SARIMA forecast on same test window
-sarima_test_forecast = results.get_prediction(
+sarimax_pred = results.get_prediction(
     start=test.index[0],
-    end=test.index[-1]
+    end=test.index[-1],
+    exog=exog.loc[test.index]
 ).predicted_mean
 
-sarima_mae = np.mean(np.abs(test - sarima_test_forecast))
-sarima_rmse = np.sqrt(np.mean((test - sarima_test_forecast) ** 2))
+sarimax_mae = np.mean(np.abs(test["items_shipped"] - sarimax_pred))
+sarimax_rmse = np.sqrt(np.mean((test["items_shipped"] - sarimax_pred) ** 2))
 
-comparison_df = pd.DataFrame({
-    "Model": ["Naive Forecast", "SARIMA"],
-    "MAE": [round(naive_mae, 2), round(sarima_mae, 2)],
-    "RMSE": [round(naive_rmse, 2), round(sarima_rmse, 2)]
+comparison = pd.DataFrame({
+    "Model": ["Naive Forecast", "SARIMAX"],
+    "MAE": [round(naive_mae, 2), round(sarimax_mae, 2)],
+    "RMSE": [round(naive_rmse, 2), round(sarimax_rmse, 2)]
 })
 
-st.dataframe(comparison_df)
+st.dataframe(comparison)
 
-# Interpretation
-if sarima_rmse < naive_rmse:
+if sarimax_rmse < naive_rmse:
     st.success(
-        "SARIMA outperforms the Naive baseline, "
-        "confirming its suitability for demand forecasting."
-    )
-else:
-    st.warning(
-        "SARIMA does not outperform the Naive baseline on this dataset."
+        "SARIMAX outperforms the naive baseline, "
+        "showing the value of external business drivers."
     )
 
-# -----------------------------------
-# Business Insights
-# -----------------------------------
+
+# --------------------------------------------------
+# Business insights
+# --------------------------------------------------
 st.subheader("Business Insights")
-
-avg_demand = df["items_shipped"].mean()
-peak_demand = df["items_shipped"].max()
 
 st.markdown(
     f"""
-**Key Insights for Decision Makers:**
+• **Average weekly demand:** {df['items_shipped'].mean():.0f} units  
+• **Peak historical demand:** {df['items_shipped'].max():.0f} units  
 
-• Average weekly demand is approximately **{avg_demand:.0f} units**  
-• Peak historical demand reached **{peak_demand:.0f} units**  
+**Business value of this system**
+- Improves inventory and logistics planning  
+- Incorporates freight and revenue as demand drivers  
+- Provides uncertainty awareness via confidence intervals  
+- Outperforms naive forecasting methods  
 
-**How this forecast helps the business:**
-- Inventory planning can align stock levels with expected demand
-- Over-stocking risk is reduced using confidence intervals
-- Seasonal patterns allow proactive workforce and logistics planning
-- Forecast uncertainty supports risk-aware decision making
-
-**Model choice justification:**
-- SARIMA captures trend and seasonality in retail demand
-- It consistently outperforms a naive baseline (lower MAE & RMSE)
-- Residual diagnostics indicate no remaining structure in errors
+**Why SARIMAX**
+- Handles trend and seasonality  
+- Uses external business variables  
+- Produces more realistic retail forecasts  
 """
+)
+
+
+# --------------------------------------------------
+# Download forecast
+# --------------------------------------------------
+download_df = forecast_df.reset_index()
+download_df.columns = ["date", "forecast", "lower_ci", "upper_ci"]
+
+st.download_button(
+    "Download Forecast (CSV)",
+    data=download_df.to_csv(index=False),
+    file_name="forecast_with_ci.csv",
+    mime="text/csv"
 )

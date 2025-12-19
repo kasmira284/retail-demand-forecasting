@@ -186,3 +186,35 @@ st.info(
     "the range within which future demand is expected to fall with high probability."
 )
 
+# -----------------------------------
+# Stationarity Test (ADF)
+# -----------------------------------
+st.subheader("Stationarity Test (Augmented Dickey–Fuller)")
+
+adf_result = adfuller(df["items_shipped"].dropna())
+
+adf_stat = adf_result[0]
+p_value = adf_result[1]
+crit_values = adf_result[4]
+
+st.write("**ADF Statistic:**", round(adf_stat, 4))
+st.write("**p-value:**", round(p_value, 6))
+
+st.write("**Critical Values:**")
+crit_df = pd.DataFrame.from_dict(
+    crit_values, orient="index", columns=["Critical Value"]
+)
+st.dataframe(crit_df)
+
+# Interpretation
+if p_value < 0.05:
+    st.success(
+        "The time series is **stationary** (p < 0.05). "
+        "No differencing is required."
+    )
+else:
+    st.warning(
+        "The time series is **non-stationary** (p ≥ 0.05). "
+        "First-order differencing is required, justifying d = 1 in SARIMA."
+    )
+

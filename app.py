@@ -221,3 +221,38 @@ else:
         "First-order differencing is required, justifying d = 1 in SARIMA."
     )
 
+# -----------------------------------
+# Model Diagnostics (Residual Analysis)
+# -----------------------------------
+st.subheader("Model Diagnostics")
+
+residuals = results.resid.dropna()
+
+# Residuals over time
+st.markdown("**Residuals over Time**")
+fig_resid, ax_resid = plt.subplots(figsize=(10, 3))
+ax_resid.plot(residuals)
+ax_resid.axhline(0, linestyle="--", color="red")
+ax_resid.set_xlabel("Date")
+ax_resid.set_ylabel("Residual")
+st.pyplot(fig_resid)
+
+# Residual distribution
+st.markdown("**Residual Distribution**")
+fig_hist, ax_hist = plt.subplots(figsize=(6, 3))
+ax_hist.hist(residuals, bins=30)
+ax_hist.set_xlabel("Residual")
+ax_hist.set_ylabel("Frequency")
+st.pyplot(fig_hist)
+
+# Residual autocorrelation
+st.markdown("**Residual Autocorrelation (ACF)**")
+fig_acf = plot_acf(residuals, lags=20)
+st.pyplot(fig_acf)
+
+# Diagnostic explanation
+st.info(
+    "If residuals fluctuate randomly around zero and show no strong autocorrelation, "
+    "the SARIMA model has successfully captured trend and seasonality."
+)
+

@@ -5,6 +5,7 @@ import numpy as np
 
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 from statsmodels.tsa.stattools import adfuller
+from statsmodels.graphics.tsaplots import plot_acf
 
 
 st.set_page_config(page_title="Retail Demand Forecasting", layout="wide")

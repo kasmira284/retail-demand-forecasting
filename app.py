@@ -2,132 +2,144 @@ import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
 from statsmodels.tsa.statespace.sarimax import SARIMAX
+import numpy as np
 
-# --------------------------------------------------
-# App Title
-# --------------------------------------------------
+st.set_page_config(page_title="Retail Demand Forecasting", layout="wide")
+
 st.title("Retail Demand Forecasting System")
 
-# --------------------------------------------------
-# Load Dataset
-# --------------------------------------------------
-@st.cache_data
-def load_data():
+# -------------------------------
+# Load default dataset
+# -------------------------------
+def load_default_data():
     df = pd.read_csv("weekly_demand.csv")
     df["date"] = pd.to_datetime(df["date"], format="%m/%d/%Y")
     df = df.sort_values("date")
     df.set_index("date", inplace=True)
+    df = df.asfreq("W")
     return df
 
-data = load_data()
+# -------------------------------
+# File uploader
+# -------------------------------
+uploaded_file = st.file_uploader(
+    "Upload your weekly demand CSV file",
+    type=["csv"]
+)
 
-# --------------------------------------------------
-# Dataset Preview
-# --------------------------------------------------
-st.subheader("Weekly Demand Dataset")
-st.write(f"Date range: {data.index.min()} to {data.index.max()}")
-st.dataframe(data.head(10))
+if uploaded_file is not None:
+    df = pd.read_csv(uploaded_file)
+else:
+    st.info("Using default dataset")
+    df = load_default_data()
 
-# --------------------------------------------------
-# Historical Demand Plot
-# --------------------------------------------------
+# -------------------------------
+# Data validation
+# -------------------------------
+required_cols = {"date", "items_shipped"}
+if not required_cols.issubset(df.columns):
+    st.error("Dataset must contain columns: date, items_shipped")
+    st.stop()
+
+df["date"] = pd.to_datetime(df["date"])
+df = df.sort_values("date")
+df.set_index("date", inplace=True)
+df = df.asfreq("W")
+
+# -------------------------------
+# Show dataset
+# -------------------------------
+st.subheader("Dataset Preview")
+st.write(f"Date range: {df.index.min().date()} → {df.index.max().date()}")
+st.dataframe(df.head())
+
+# -------------------------------
+# Plot historical demand
+# -------------------------------
 st.subheader("Historical Weekly Demand")
 
 fig, ax = plt.subplots(figsize=(10, 4))
-ax.plot(data.index, data["items_shipped"], label="Historical Demand")
+ax.plot(df.index, df["items_shipped"], label="Items Shipped")
 ax.set_xlabel("Date")
 ax.set_ylabel("Items Shipped")
 ax.legend()
 st.pyplot(fig)
 
-# --------------------------------------------------
-# Forecast Settings
-# --------------------------------------------------
+# -------------------------------
+# Forecast settings
+# -------------------------------
 st.subheader("Forecast Settings")
 
-forecast_horizon = st.slider(
+horizon = st.slider(
     "Select number of weeks to forecast",
     min_value=4,
     max_value=26,
-    value=12,
-    step=1
+    value=12
 )
 
-st.write(f"Forecasting **{forecast_horizon} weeks ahead**")
+# -------------------------------
+# Train SARIMA model
+# -------------------------------
+use_seasonality = len(df) >= 120  # safe threshold
 
-# --------------------------------------------------
-# SARIMAX MODEL (TRAIN ONCE)
-# --------------------------------------------------
-@st.cache_resource
-def train_sarimax(series):
+if use_seasonality:
     model = SARIMAX(
-        series,
+        df["items_shipped"],
         order=(0, 1, 1),
         seasonal_order=(0, 0, 1, 52),
         enforce_stationarity=False,
         enforce_invertibility=False
     )
-    fitted_model = model.fit(disp=False)
-    return fitted_model
+else:
+    model = SARIMAX(
+        df["items_shipped"],
+        order=(0, 1, 1),
+        enforce_stationarity=False,
+        enforce_invertibility=False
+    )
 
-sarimax_model = train_sarimax(data["items_shipped"])
+results = model.fit(disp=False)
 
-# --------------------------------------------------
-# Forecast Generation
-# --------------------------------------------------
-forecast = sarimax_model.get_forecast(steps=forecast_horizon)
-forecast_mean = forecast.predicted_mean
-forecast_ci = forecast.conf_int()
+# -------------------------------
+# Forecast
+# -------------------------------
+forecast = results.get_forecast(steps=horizon)
 
 forecast_index = pd.date_range(
-    start=data.index[-1] + pd.Timedelta(weeks=1),
-    periods=forecast_horizon,
+    start=df.index[-1] + pd.Timedelta(weeks=1),
+    periods=horizon,
     freq="W"
 )
 
-forecast_mean.index = forecast_index
-forecast_ci.index = forecast_index
+forecast_series = pd.Series(
+    forecast.predicted_mean.values,
+    index=forecast_index
+)
 
-# --------------------------------------------------
-# Forecast Plot with Confidence Intervals
-# --------------------------------------------------
-st.subheader("SARIMAX Forecast with Confidence Intervals")
+# -------------------------------
+# Plot forecast
+# -------------------------------
+st.subheader("Forecast Results")
 
 fig2, ax2 = plt.subplots(figsize=(10, 4))
-
-ax2.plot(data.index, data["items_shipped"], label="Historical")
-ax2.plot(
-    forecast_mean.index,
-    forecast_mean,
-    linestyle="--",
-    label="Forecast"
-)
-
-ax2.fill_between(
-    forecast_ci.index,
-    forecast_ci.iloc[:, 0],
-    forecast_ci.iloc[:, 1],
-    color="gray",
-    alpha=0.3,
-    label="Confidence Interval"
-)
-
+ax2.plot(df.index, df["items_shipped"], label="Historical")
+ax2.plot(forecast_series.index, forecast_series, label="Forecast")
 ax2.set_xlabel("Date")
 ax2.set_ylabel("Items Shipped")
 ax2.legend()
-
 st.pyplot(fig2)
 
-# --------------------------------------------------
-# Forecast Table
-# --------------------------------------------------
-st.subheader("Forecast Values")
+# -------------------------------
+# Download forecast
+# -------------------------------
+forecast_df = forecast_series.reset_index()
+forecast_df.columns = ["date", "forecast_items"]
 
-forecast_df = pd.DataFrame({
-    "Forecasted Items Shipped": forecast_mean.round(0).astype(int),
-    "Lower Bound": forecast_ci.iloc[:, 0].round(0).astype(int),
-    "Upper Bound": forecast_ci.iloc[:, 1].round(0).astype(int),
-})
+st.download_button(
+    label="Download Forecast CSV",
+    data=forecast_df.to_csv(index=False),
+    file_name="forecast.csv",
+    mime="text/csv"
+)
 
-st.dataframe(forecast_df)
 
